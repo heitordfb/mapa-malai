@@ -54,7 +54,7 @@ const P=[
 
 const map=L.map('map',{zoomControl:false,attributionControl:true,maxZoom:20});
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
- {maxZoom:20,maxNativeZoom:19,attribution:'Imagens © Esri'}).addTo(map);
+ {maxZoom:20,maxNativeZoom:17,attribution:'Imagens © Esri'}).addTo(map);
 const bounds=L.latLngBounds(P.map(p=>p.ll)).pad(0.15);
 map.fitBounds(bounds);
 
@@ -98,29 +98,46 @@ function selectRoom(fly){
   if(fly){if(pos)map.fitBounds(L.latLngBounds([room,pos]).pad(0.3),{maxZoom:19});else map.setView(room,19);}
   route(true);status();
 }
-async function route(force){
+const G={"n":[[-14.946516,-55.787748],[-14.946775,-55.787212],[-14.947159,-55.787534],[-14.947221,-55.788124],[-14.947138,-55.78866],[-14.947656,-55.788553],[-14.947812,-55.788338],[-14.947604,-55.787694],[-14.948123,-55.787909],[-14.948382,-55.78748],[-14.948123,-55.786836],[-14.947864,-55.7863],[-14.947729,-55.785924],[-14.949315,-55.786214],[-14.949449,-55.786353],[-14.947034,-55.786997],[-14.947345,-55.786514],[-14.946671,-55.786461],[-14.946775,-55.786321],[-14.946775,-55.785978],[-14.946568,-55.785549],[-14.946412,-55.785248],[-14.94662,-55.784905],[-14.947086,-55.78528],[-14.947449,-55.785602],[-14.947501,-55.785763],[-14.947293,-55.784959],[-14.947034,-55.784476],[-14.947553,-55.784154],[-14.948278,-55.783993],[-14.94605,-55.785066],[-14.945998,-55.785871],[-14.946309,-55.786353]],"e":[[0,1],[1,2],[2,3],[3,4],[4,5],[5,6],[2,7],[7,8],[8,9],[9,10],[10,11],[11,12],[12,13],[13,14],[12,24],[24,25],[24,23],[23,22],[22,21],[21,20],[20,19],[19,18],[18,17],[17,15],[15,16],[16,12],[23,26],[26,28],[22,27],[27,28],[28,29],[22,30],[1,17],[1,15],[3,7],[30,31],[31,32],[32,17]]};
+// rede de caminhos do resort (traçada sobre o satélite) + Dijkstra
+const LAT0=-14.947,KX=111320*Math.cos(LAT0*Math.PI/180),KY=110540;
+const xy=p=>({x:p[1]*KX,y:p[0]*KY}),back=q=>[q.y/KY,q.x/KX];
+const GN=G.n.map(xy),ADJ=GN.map(()=>[]);
+G.e.forEach(([a,b])=>{const d=Math.hypot(GN[a].x-GN[b].x,GN[a].y-GN[b].y);ADJ[a].push([b,d]);ADJ[b].push([a,d]);});
+function snap(p){const q=xy(p);let best=null;
+  G.e.forEach(([a,b])=>{const A=GN[a],B=GN[b],dx=B.x-A.x,dy=B.y-A.y,L=dx*dx+dy*dy;
+    let t=L?((q.x-A.x)*dx+(q.y-A.y)*dy)/L:0;t=Math.max(0,Math.min(1,t));
+    const P={x:A.x+t*dx,y:A.y+t*dy},d=Math.hypot(q.x-P.x,q.y-P.y);
+    if(!best||d<best.d)best={a,b,P,d,da:Math.hypot(P.x-A.x,P.y-A.y),db:Math.hypot(P.x-B.x,P.y-B.y)};});
+  return best;}
+function pathOnGraph(from,to){
+  const s=snap(from),e=snap(to);if(!s||!e||s.d>250||e.d>250)return null;
+  const n=GN.length,S=n,T=n+1,adj=ADJ.map(x=>x.slice());adj[S]=[[s.a,s.da],[s.b,s.db]];adj[T]=[];
+  adj[e.a].push([T,e.da]);adj[e.b].push([T,e.db]);
+  if((s.a===e.a&&s.b===e.b)||(s.a===e.b&&s.b===e.a))adj[S].push([T,Math.hypot(s.P.x-e.P.x,s.P.y-e.P.y)]);
+  const dist=Array(n+2).fill(Infinity),prev=Array(n+2).fill(-1),done=Array(n+2).fill(false);dist[S]=0;
+  for(;;){let u=-1;for(let i=0;i<n+2;i++)if(!done[i]&&(u<0||dist[i]<dist[u]))u=i;
+    if(u<0||dist[u]===Infinity||u===T)break;done[u]=true;
+    for(const[v,w]of adj[u])if(dist[u]+w<dist[v]){dist[v]=dist[u]+w;prev[v]=u;}}
+  if(dist[T]===Infinity)return null;
+  const ids=[];for(let u=prev[T];u!==S&&u>=0;u=prev[u])ids.unshift(u);
+  return[from,back(s.P),...ids.map(i=>G.n[i]),back(e.P),to];
+}
+function route(force){
   if(!sel||!pos||!sel.ll)return;
-  if(!force&&routeTo===sel&&routeFrom&&map.distance(routeFrom,pos)<15)return;
-  routeTo=sel;routeFrom=pos.slice();routeInfo='';
-  const a=pos,b=sel.ll,target=sel;
-  let coords=null;
-  try{
-    const r=await fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`);
-    const j=await r.json();
-    if(j.routes&&j.routes[0]){const c=j.routes[0].geometry.coordinates.map(x=>[x[1],x[0]]);
-      const straight=map.distance(a,b);
-      // só usa a rota se ela começa e termina perto e não é absurdamente longa
-      if(map.distance(c[0],a)<60&&map.distance(c[c.length-1],b)<60&&j.routes[0].distance<straight*3+150)coords=[a,...c,b];}
-  }catch(e){}
-  if(sel!==target)return;
+  if(!force&&routeTo===sel&&routeFrom&&map.distance(routeFrom,pos)<8)return;
+  routeTo=sel;routeFrom=pos.slice();
+  const coords=pathOnGraph(pos,sel.ll);
   if(routeL)map.removeLayer(routeL);
-  const line=coords||[a,b];
+  const line=coords||[pos,sel.ll];
   routeL=L.layerGroup([
-    L.polyline(line,{color:'#fff',weight:9,opacity:.9}),
-    L.polyline(line,{color:'#2b7fff',weight:5,dashArray:coords?null:'8 10'})
+    L.polyline(line,{color:'#fff',weight:10,opacity:.9}),
+    L.polyline(line,{color:'#2b7fff',weight:6,dashArray:coords?null:'8 10'}),
+    L.circleMarker(sel.ll,{radius:16,color:'#F7941D',weight:3,fill:false})
   ]).addTo(map);
   let d=0;for(let i=1;i<line.length;i++)d+=map.distance(line[i-1],line[i]);
-  routeInfo=`${fmt(d)} · ~${Math.max(1,Math.round(d/80))} min a pé`+(coords?'':' (linha reta)');
+  const straight=map.distance(pos,sel.ll);
+  routeInfo=straight<15?'você chegou! 🎉':`${fmt(d)} · ~${Math.max(1,Math.round(d/70))} min a pé`+(coords?'':' (linha reta)');
   status();
 }
 let routeInfo='';
