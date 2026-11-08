@@ -26,6 +26,10 @@ li button.on{background:#fff4e3}
 .ctl{position:fixed;right:12px;z-index:1001;display:flex;flex-direction:column;gap:8px;bottom:calc(38vh + 14px)}
 .ctl button{width:48px;height:48px;border:0;border-radius:50%;background:#fff;font-size:22px;box-shadow:0 2px 8px rgba(0,0,0,.35)}
 .ctl button.on{background:#2b7fff;color:#fff}
+#room{display:flex;gap:8px;align-items:center;margin-top:8px}
+#room button{border:0;border-radius:10px;padding:9px 12px;font:700 14px system-ui,Roboto,sans-serif;background:var(--or);color:#fff}
+#room button.g{background:#fff;color:var(--navy);border:1px solid var(--line)}
+.room .num{background:#7b2ff7}
 .leaflet-tooltip.lbl{font-weight:700;font-size:13px}
 </style>
 </head>
@@ -36,7 +40,7 @@ li button.on{background:#fff4e3}
   <button id="all" aria-label="Ver resort inteiro">⤢</button>
 </div>
 <div id="sheet">
-  <div id="top"><h1><span>Mapa</span> do Malai Manso</h1><div id="st">Toque em 📍 para ver onde você está.</div></div>
+  <div id="top"><h1><span>Mapa</span> do Malai Manso</h1><div id="st">Toque em 📍 para ver onde você está.</div><div id="room"></div></div>
   <ul id="list"></ul>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -64,20 +68,77 @@ P.forEach(p=>{const li=document.createElement('li');
   li.innerHTML=`<button data-n="${p.n}"><span class="num">${p.n}</span><span>${p.name}</span><span class="d" id="d${p.n}"></span></button>`;
   li.firstChild.onclick=()=>select(p.n,true);ul.appendChild(li);});
 
+
+let room=null;try{room=JSON.parse(localStorage.getItem('malai_room1579')||'null')}catch(e){}
+let roomM=null,pendingRoom=false,routeL=null,routeTo=null,routeFrom=null;
+const R={n:'🛏',name:'Quarto 1579',ll:null,room:true};
+function drawRoom(){
+  const box=document.getElementById('room');
+  if(room){R.ll=room;
+    if(!roomM){roomM=L.marker(room,{icon:L.divIcon({className:'pinw room',html:'<span class="num">🛏</span>',iconSize:[28,28],iconAnchor:[14,14]}),zIndexOffset:500})
+      .addTo(map).bindTooltip('Quarto 1579',{direction:'top',offset:[0,-14],className:'lbl',permanent:true}).on('click',()=>selectRoom(false));}
+    else roomM.setLatLng(room);
+    box.innerHTML='<button id="goroom">🛏 Voltar ao quarto 1579</button><button class="g" id="redo">Remarcar</button>';
+    document.getElementById('goroom').onclick=()=>selectRoom(true);
+    document.getElementById('redo').onclick=()=>{pendingRoom=true;ensureGps();box.innerHTML='<span style="font-size:13px">Pegando sua posição para o quarto…</span>';trySaveRoom();};
+  }else{
+    box.innerHTML='<button id="mark">🛏 Estou no quarto 1579 — marcar aqui</button>';
+    document.getElementById('mark').onclick=()=>{pendingRoom=true;ensureGps();box.innerHTML='<span style="font-size:13px">Pegando sua posição para o quarto…</span>';trySaveRoom();};
+  }
+}
+function trySaveRoom(){
+  if(!pendingRoom||!pos)return;
+  if(acc>40){document.getElementById('room').innerHTML=`<span style="font-size:13px">Melhorando o sinal (±${Math.round(acc)} m)… chegue perto da janela ou varanda.</span>`;return;}
+  pendingRoom=false;room=pos.slice();try{localStorage.setItem('malai_room1579',JSON.stringify(room))}catch(e){}
+  drawRoom();
+}
+function selectRoom(fly){
+  sel=R;P.forEach(p=>p.m.getElement()&&p.m.getElement().classList.remove('sel'));
+  document.querySelectorAll('#list button').forEach(b=>b.classList.remove('on'));
+  if(fly){if(pos)map.fitBounds(L.latLngBounds([room,pos]).pad(0.3),{maxZoom:19});else map.setView(room,19);}
+  route(true);status();
+}
+async function route(force){
+  if(!sel||!pos||!sel.ll)return;
+  if(!force&&routeTo===sel&&routeFrom&&map.distance(routeFrom,pos)<15)return;
+  routeTo=sel;routeFrom=pos.slice();routeInfo='';
+  const a=pos,b=sel.ll,target=sel;
+  let coords=null;
+  try{
+    const r=await fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`);
+    const j=await r.json();
+    if(j.routes&&j.routes[0]){const c=j.routes[0].geometry.coordinates.map(x=>[x[1],x[0]]);
+      const straight=map.distance(a,b);
+      // só usa a rota se ela começa e termina perto e não é absurdamente longa
+      if(map.distance(c[0],a)<60&&map.distance(c[c.length-1],b)<60&&j.routes[0].distance<straight*3+150)coords=[a,...c,b];}
+  }catch(e){}
+  if(sel!==target)return;
+  if(routeL)map.removeLayer(routeL);
+  const line=coords||[a,b];
+  routeL=L.layerGroup([
+    L.polyline(line,{color:'#fff',weight:9,opacity:.9}),
+    L.polyline(line,{color:'#2b7fff',weight:5,dashArray:coords?null:'8 10'})
+  ]).addTo(map);
+  let d=0;for(let i=1;i<line.length;i++)d+=map.distance(line[i-1],line[i]);
+  routeInfo=`${fmt(d)} · ~${Math.max(1,Math.round(d/80))} min a pé`+(coords?'':' (linha reta)');
+  status();
+}
+let routeInfo='';
+function ensureGps(){if(watch===null)document.getElementById('gps').click();}
 function select(n,fly){
   sel=P.find(p=>p.n===n);
   P.forEach(p=>p.m.getElement()&&p.m.getElement().classList.toggle('sel',p===sel));
   document.querySelectorAll('#list button').forEach(b=>b.classList.toggle('on',+b.dataset.n===n));
   sel.m.openTooltip();follow=false;document.getElementById('gps').classList.toggle('on',false);
   if(fly){ if(pos)map.fitBounds(L.latLngBounds([sel.ll,pos]).pad(0.3),{maxZoom:19});else map.setView(sel.ll,19);}
-  status();
+  route(true);status();
 }
 function fmt(m){return m<1000?Math.round(m)+' m':(m/1000).toFixed(1).replace('.',',')+' km'}
 function status(){
   const st=document.getElementById('st');
   if(!pos){if(watch===null)st.textContent='Toque em 📍 para ver onde você está.';return;}
   P.forEach(p=>document.getElementById('d'+p.n).textContent=fmt(map.distance(pos,p.ll)));
-  const t=sel?`${sel.name}: ${fmt(map.distance(pos,sel.ll))} de você · `:'';
+  const t=sel&&sel.ll?`➜ ${sel.name}: ${routeInfo||fmt(map.distance(pos,sel.ll))} · `:'';
   st.textContent=`${t}GPS ativo, precisão ~${Math.round(acc)} m`;
 }
 
@@ -93,12 +154,13 @@ document.getElementById('gps').onclick=()=>{
       acc&&(window.ac=L.circle(pos,{radius:acc,color:'#2b7fff',weight:1,fillOpacity:.12}).addTo(map));
       map.setView(pos,18);}
     else{me.setLatLng(pos);window.ac&&ac.setLatLng(pos).setRadius(acc);if(follow)map.panTo(pos);}
-    status();
+    trySaveRoom();route(false);status();
   },e=>{watch=null;b.classList.remove('on');
     document.getElementById('st').textContent=e.code===1?'Localização bloqueada. Libere em: cadeado ao lado do endereço › Permissões › Local.':'Sem sinal de GPS agora. Tente ao ar livre.';
   },{enableHighAccuracy:true,maximumAge:3000,timeout:20000});
 };
 map.on('dragstart',()=>{follow=false;document.getElementById('gps').classList.remove('on')});
+drawRoom();
 document.getElementById('all').onclick=()=>{follow=false;document.getElementById('gps').classList.remove('on');map.fitBounds(bounds)};
 </script>
 </body>
